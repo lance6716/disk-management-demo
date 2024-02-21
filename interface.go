@@ -3,8 +3,8 @@ package disk_management_demo
 import "errors"
 
 type SpaceHandle struct {
-	// private field
-	// TODO
+	ID int
+	spaceHandlePrivates
 }
 
 var (
@@ -12,13 +12,22 @@ var (
 	ErrInvalidHandle = errors.New("invalid handle")
 )
 
+// Manager uses a local file to provide a simple storage interface for data. All
+// data are persisted in the file. Any successful invocation of this interface
+// guarantees that the action is persisted.
 type Manager interface {
-	// Write persists the data to the storage and returns a handle of it.
+	// Alloc reserves a space of given size and returns a handle of it.
 	//
 	// If the storage is full, it returns ErrDiskFull.
-	Write(data []byte) (SpaceHandle, error)
-	// Delete removes the data of given handle from the storage.
+	Alloc(size int) (SpaceHandle, error)
+	// Free releases the space of given handle.
 	//
 	// If the handle does not exist, it returns ErrInvalidHandle.
-	Delete(handle SpaceHandle) error
+	Free(handle SpaceHandle) error
 }
+
+// ManagerConstructor is a function type that creates a Manager. The content of
+// Manager is stored in a file specified by imageFilePath.
+type ManagerConstructor func(imageFilePath string) Manager
+
+var NewDiskManager ManagerConstructor = newDiskManagerImpl
