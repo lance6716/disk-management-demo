@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math/rand"
+	"sync"
 	"testing"
 )
 
@@ -164,5 +165,152 @@ func BenchmarkIter128MiElem(b *testing.B) {
 		}
 		bucket[got] = bucket[last]
 		bucket = bucket[:last]
+	}
+}
+
+var counter *int64 = new(int64)
+
+type task struct {
+	toInc *int64
+}
+
+func prepareTasks() ([][]task, int) {
+	clientConcurrency := 4000
+	taskCntPerClient := 250
+	clientsTasks := make([][]task, clientConcurrency)
+	for i := range clientsTasks {
+		clientsTasks[i] = make([]task, taskCntPerClient)
+		for j := range clientsTasks[i] {
+			clientsTasks[i][j].toInc = counter
+		}
+	}
+	return clientsTasks, clientConcurrency * taskCntPerClient
+}
+
+func BenchmarkCallSerialized(b *testing.B) {
+	tasks, expected := prepareTasks()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		*counter = 0
+		for _, ts := range tasks {
+			for _, t := range ts {
+				*t.toInc++
+			}
+		}
+		if *counter != int64(expected) {
+			panic("unexpected")
+		}
+	}
+}
+
+type asyncTask struct {
+	t task
+	r chan int64
+}
+
+func prepareAsyncTasks() ([][]asyncTask, int) {
+	clientConcurrency := 4000
+	taskCntPerClient := 250
+	clientsTasks := make([][]asyncTask, clientConcurrency)
+	for i := range clientsTasks {
+		clientsTasks[i] = make([]asyncTask, taskCntPerClient)
+		for j := range clientsTasks[i] {
+			clientsTasks[i][j].t.toInc = counter
+			clientsTasks[i][j].r = make(chan int64)
+		}
+	}
+	return clientsTasks, clientConcurrency * taskCntPerClient
+}
+
+func benchCallWithChan(b *testing.B, ch chan asyncTask) {
+	tasks, expected := prepareAsyncTasks()
+	var wg sync.WaitGroup
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		*counter = 0
+		wg.Add(len(tasks))
+		for _, ts := range tasks {
+			ts := ts
+			go func() {
+				for _, t := range ts {
+					ch <- t
+					<-t.r
+				}
+				wg.Done()
+			}()
+		}
+		b.StartTimer()
+
+		for j := 0; j < expected; j++ {
+			t := <-ch
+			*t.t.toInc++
+			t.r <- *t.t.toInc
+		}
+		wg.Wait()
+
+		if *counter != int64(expected) {
+			panic("unexpected")
+		}
+	}
+}
+
+func BenchmarkCallChanUnbuffered(b *testing.B) {
+	ch := make(chan asyncTask)
+	benchCallWithChan(b, ch)
+}
+
+func BenchmarkCallChanBuffered(b *testing.B) {
+	ch := make(chan asyncTask, 128)
+	benchCallWithChan(b, ch)
+}
+
+type taskWithLock struct {
+	toInc *int64
+	mu    *sync.Mutex
+}
+
+func prepareTasksWithLock() ([][]taskWithLock, int) {
+	clientConcurrency := 4000
+	taskCntPerClient := 250
+	var mu sync.Mutex
+	clientsTasks := make([][]taskWithLock, clientConcurrency)
+	for i := range clientsTasks {
+		clientsTasks[i] = make([]taskWithLock, taskCntPerClient)
+		for j := range clientsTasks[i] {
+			clientsTasks[i][j].toInc = counter
+			clientsTasks[i][j].mu = &mu
+		}
+	}
+	return clientsTasks, clientConcurrency * taskCntPerClient
+}
+
+func BenchmarkCallAcquireLock(b *testing.B) {
+	tasks, expected := prepareTasksWithLock()
+	var wg sync.WaitGroup
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		*counter = 0
+		wg.Add(len(tasks))
+		for i := range tasks {
+			i := i
+			go func() {
+				for j := range tasks[i] {
+					t := tasks[i][j]
+					t.mu.Lock()
+					*t.toInc++
+					t.mu.Unlock()
+				}
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+
+		if *counter != int64(expected) {
+			panic("unexpected")
+		}
 	}
 }

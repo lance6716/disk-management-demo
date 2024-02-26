@@ -1,4 +1,4 @@
-# 设计
+# 基本设计
 
 ## 元信息设计选择的讨论
 
@@ -145,9 +145,43 @@ BenchmarkIter128MiElem-8   	      12	  85439798 ns/op
 3. 从 freeSpaces 中删除这些指针，freeSpaces.getBucket(length).delete(offset)
 4. 向 freeSpaces 中添加新的指针，freeSpaces.getBucket(totalLength).put(leftOffset, totalLength)
 
-## 并发调用
+## 并发调用（下文中实现）
 
 如果单线程的性能可以达到要求，可以将多个线程的请求转发给单线程 worker 完成。
 否则可以需要对访问的各个数据结构实现并发接口。
 
 除此之外，并发调用有机会将一个单元分配给多个亚单元级别的分配操作。
+
+# 在基本实现后简单测试性能
+
+## 测试无删除操作的单纯分配
+
+测试单线程每次请求分配 1MiB，见 `impl_manager_test.go`
+
+```
+=== RUN   TestAllocDuration
+    impl_manager_test.go:216: 1048576 Allocs took 72.166459ms, 68ns/alloc
+--- PASS: TestAllocDuration (0.12s)
+```
+
+单线程分配的性能足够快，因此实现并发调用时减少争抢开销即可。
+
+# 并发安全设计
+
+首先考虑简单通过锁或者 channel 保护临界区，如果性能足够，可以直接使用这种方式。
+测试对于 i++ 的任务，共 1000000 个任务，并发度为 4000 时的耗时变化，见 `impl_manager_test.go`
+
+```
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkCallSerialized-8       	     572	   2084792 ns/op
+BenchmarkCallChanUnbuffered-8   	       3	 336400222 ns/op
+BenchmarkCallChanBuffered-8     	       3	 381394472 ns/op
+BenchmarkCallAcquireLock-8      	       8	 140232932 ns/op
+PASS
+```
+
+使用锁的方式性能最好，每个任务耗时从 2ns 增加到 140ns。
+虽然相较于真正的 Alloc 耗时 68ns 很慢，但期望这种耗时也能够容忍。
+

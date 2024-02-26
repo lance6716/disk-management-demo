@@ -26,10 +26,6 @@ type diskManagerImpl struct {
 	freeSpaces *freeSpacesTp
 }
 
-func NewDiskManagerImpl(imageFilePath string) (Manager, error) {
-	return newDiskManagerImpl(imageFilePath)
-}
-
 func newDiskManagerImpl(imageFilePath string) (*diskManagerImpl, error) {
 	f, err := os.OpenFile(imageFilePath, os.O_RDWR, 0644)
 	if err != nil {
