@@ -27,4 +27,4 @@ type Manager interface {
 // Manager is stored in a file specified by imageFilePath.
 type ManagerConstructor func(imageFilePath string) (Manager, error)
 
-var NewDiskManager ManagerConstructor = newDiskManagerImpl
+var NewDiskManager ManagerConstructor = NewDiskManagerImpl

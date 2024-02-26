@@ -1,102 +1,153 @@
-# 设计 1
+# 设计
 
-## 元信息设计
+## 元信息设计选择的讨论
 
 考虑到待管理的空间大小为 1TiB、单元粒度为 4KiB，那么单元总数为 256M 个。
-设计 1 想从“连续分配或释放”入手管理元信息，那么有如下信息需要记录：
+单次分配不超过 4MiB，因此单次分配或释放的单元数不超过 1024 个。
 
-- 首地址，取值有 256M 个，28bit
-- 分配标志，1bit
-- 长度，取值有 256M 个，28bit
+初步能想到如下两种数据结构：
 
-设计 1 以比较直观的方式记录元信息。
-为了方便以首地址进行寻址，我们为 256M 个首地址分配定长的数据结构，这样的数据结构需要 29 bit，可以用 4B 存储。
-因此占用空间为 256M * 4B = 1GiB。
+1. 位图：使用位图表示每个单元是否被使用，每个单元需要 1bit，总共需要 32MiB 的空间。
+2. 记录长度：记录每个单元的“使用状态+连续状态长度”信息，需要花费 1bit+10bit，可以用 2B 存储，总共需要 512MiB 的空间。
 
-如果将 1GiB 的空间始终加载在内存中，有两个缺点：
-首先是 1GiB 的内存占用在主观感受上有些大；
-其次是元信息格式有很大的浪费，在连续分配 N 个单元时，除首个单元的 N-1 个单元的元信息都是没有使用的，白白占据了内存。
-因此决定将这 1GiB 存储在磁盘上。
+在元信息上，需要有如下操作：
 
-对于分配标志，规定 1 为已分配，0 为未分配。
+- 寻找：寻找连续 N 个未分配的单元，N <= 1024
+- 分配：将“寻找”结果标记为已分配
+- 释放：将已分配的连续 N 个单元标记为未分配
 
-除此之外，还需要记录一些额外的信息，例如整个空间是否已经格式化。
-设计 1 在空间的最头部留出 4B 的空间维护这些信息。
-
-## 存储布局
-
-待管理空间为
+首先初步检查两种数据结构对于成功的“寻找”操作的性能。假设最坏情况，N = 1024，在 `bench_test.go` 中进行了测试。
 
 ```
-[0B ~ 3B ][4B ~ 7B]...[1GiB ~ (1Gi+3)B]
-| 额外信息 | 单元0  |...| 单元(256M-1)   |
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkBitmapCheckContinuousZero
+BenchmarkBitmapCheckContinuousZero-8   	186521175	         6.439 ns/op
+BenchmarkParseToCheck
+BenchmarkParseToCheck-8                	843539036	         1.378 ns/op
 ```
 
-单元
+两种数据结构的速度都足够快。
+
+接下来初步检查两种数据结构对于“分配”和“释放”操作的性能。使用 N = 1024 的写入场景进行模拟，在 `bench_test.go` 中进行测试。
 
 ```
-[0bit ~ 27bit][28bit    ][29bit ~ 31bit]
-| 长度        | 分配标志  | 保留          |
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkBitmapWriteContinuousOne
+BenchmarkBitmapWriteContinuousOne-8   	323129762	         3.818 ns/op
+BenchmarkEncodeAndWrite
+BenchmarkEncodeAndWrite-8             	889015932	         1.338 ns/op
 ```
 
-## 元信息更新
+同样，两种数据结构的速度都足够快。
 
-首先不考虑并发调用的场景。
-对于每次分配和释放的调用，多个单元需要更新，我们假设已经实现了原子提交功能 `Commit([]UnitModify)`。
+在这两种测试里，两种数据结构的性能都足够好，而位图的空间占用更小、几乎不需要额外维护其他特性，因此优先考虑位图。
+但是我们还需要考虑失败的“寻找”操作的性能，如果不进行优化，在无法分配 1 个单元的情况下，耗时为 105ms（见 `bench_test.go`）。
 
-接下来我们需要计算需要更新的若干单元，对于分配操作 `Alloc(n int)`，大体流程如下
-
-```go
-var freeUnitIdx int32
-
-func Alloc(n int) (SpaceHandle, error) {
-	freeUnits := decodeUnits(freeUnitIdx)
-	switch {
-	case n < freeUnits.length:
-		modifies := []UnitModify{
-		    {freeUnitIdx, StateUsed, n},
-            {freeUnitIdx + n, StateFree, freeUnits.length - n},
-        }
-		Commit(modifies)
-		oldFreeUnitIdx := freeUnitIdx
-		freeUnitIdx += n
-		return NewSpaceHandle(oldFreeUnitIdx, n), nil
-	case n == freeUnits.length:
-		modifies := []UnitModify{
-		    {freeUnitIdx, StateUsed, n},
-        }
-		modifies, nextFreeUnitIdx = mergeFollowingUnits(modifies)
-        Commit(modifies)
-		oldFreeUnitIdx := freeUnitIdx
-		freeUnitIdx = nextFreeUnitIdx
-		return NewSpaceHandle(oldFreeUnitIdx, n), nil
-	case n > freeUnits.length:
-		unitIdx := findEnoughSpace(n)
-		if unitIdx < 0 {
-			return nil, ErrNoEnoughSpace
-		}
-
-        freeUnitIdx = unitIdx
-		return Alloc(n)
-    }
-}
+```
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkBitmapCheckFailed128-8   	     724	   1441247 ns/op
+BenchmarkBitmapCheckFailed1-8     	      10	 105219108 ns/op
 ```
 
-对于释放操作 `Free(handle SpaceHandle, n int)`，大体流程如下
+这可以通过简单维护一些指向连续未分配单元开头的指针来解决。
 
-```go
-func Free(handle SpaceHandle, n int) error {
-    modifies := []UnitModify{
-        {handle.ID, StateFree, n},
-    }
-    modifies, nextFreeUnitIdx = mergeFollowingUnits(modifies)
-    Commit(modifies)
-    freeUnitIdx = nextFreeUnitIdx
-    return nil
-}
+这些指针需要携带的信息是起始位置 offset（0~256Mi-1）和长度 length（1~256Mi），分配操作需要实现如下接口：
+- put(offset, length)
+- takeAtLeast(length) (offset, length)
+
+可以使用桶分治存放这些指针，每个桶的属性是
+- lengthLowerBound
+- lengthUpperBound
+长度在 [lengthLowerBound, lengthUpperBound) 的指针存放在这个桶中。
+
+当桶只能包含一个长度时，我们可以使用一个数组存放指针，在数组尾部实现 put、takeAtLeast。
+对于这样的桶，只包含 1 这个长度时，需要存放的元素最多，为 128Mi 个。
+需要 28bit 存放 offset，可以使用 4B 来存储，对应的空间占用是 512MiB。
+
+当桶包含多个长度时，takeAtLeast 需要遍历内部的容器，才能找到满足条件的指针。
+我们测试桶中至多包含多少个元素时遍历能满足性能要求，发现在桶中包含 1Mi 元素时，最坏情况下耗时约在 0.6ms（见 `bench_test.go`）
+
+```
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkIter1MiElem
+BenchmarkIter1MiElem-8   	    1857	    612238 ns/op
 ```
 
-预期如上的操作，在磁盘上 seek、read 的耗时占比较大，可以考虑 `freeUnitIdx` 将后续的若干单元预加载到内存中。
+如果把 [128, 256) 的长度分配到一个桶中，最坏情况下每次分配的长度都是 128，而已分配和未分配的单元全部相隔，
+那么桶中有 256Mi/128/2 = 1Mi 个元素。
 
-另一个提升性能的角度是，注意到上面的操作几乎是局部的（除了 `findEnoughSpace` 以及 `mergeFollowingUnits`），
-因此在合适的加锁或者分区场景下，可以考虑支持并发更新。
+因此桶的划分策略是：
+- 对于长度小于 128 的指针，在专属的桶中存放
+- 对于长度大于等于 128 的指针，存放在长度为 [ floor(log2(length), ceil(log2(length)) ) 的桶中。
+共有 127+22 = 149 个桶。
+
+第一类桶使用数组实现，数组中的元素是 offset。
+第二类桶使用数组实现，数组中的元素是 (offset, length%lengthLowerBound)。
+
+按照求，删除操作的性能可以低一些，因此我们适当降低对删除操作的要求。
+删除操作会引发相邻的未分配空间的合并，因此桶中的指针也需要删除并移动到其他桶中。
+
+对于左侧相邻的未分配空间，可以在位图上找到，时间开销与 `BenchmarkBitmapCheckFailed128` 接近
+
+```
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkBitmapCheckFailed128-8   	     724	   1441247 ns/op
+```
+
+接下来就可以根据左侧和右侧的未分配空间的首地址、长度，从桶中删除它们的指针。
+因此接口需要实现
+- delete(offset)
+
+第一类桶的元素至多为 128Mi 个，测试删除操作的性能（见 `bench_test.go`）
+
+```
+goos: darwin
+goarch: arm64
+pkg: github.com/lance6716/disk-management-demo
+BenchmarkIter128MiElem
+BenchmarkIter128MiElem-8   	      12	  85439798 ns/op
+```
+
+如果性能不符合要求，可以将桶进一步按照 offset 划分成更小的桶。
+
+## 元信息方案
+
+最终选择的元信息方案是：
+- bitmap: [32MiB]byte
+- freeSpaces: struct{ getBucket(length) BucketInterface } 
+
+其中 bitmap 被持久化到磁盘，freeSpaces 在初始化时从 bitmap 中构建出来，然后在内存中维护。
+
+### 寻找操作
+
+1. 通过 freeSpaces.getBucket(length).takeAtLeast(length) 获取连续的未分配单元
+
+### 分配操作
+
+1. 使用寻找操作获取连续的未分配单元
+2. 将 bitmap 中对应的位标记为已分配
+3. 如果该单元还有剩余空间，使用 freeSpaces.getBucket(length-n).put(offset+n, length-n) 将剩余空间放入 freeSpaces 中
+
+### 释放操作
+
+1. 将 bitmap 中对应的位标记为未分配
+2. 在 bitmap 上 seek 左右相邻的未分配空间的首地址、长度
+3. 从 freeSpaces 中删除这些指针，freeSpaces.getBucket(length).delete(offset)
+4. 向 freeSpaces 中添加新的指针，freeSpaces.getBucket(totalLength).put(leftOffset, totalLength)
+
+## 并发调用
+
+如果单线程的性能可以达到要求，可以将多个线程的请求转发给单线程 worker 完成。
+否则可以需要对访问的各个数据结构实现并发接口。
+
+除此之外，并发调用有机会将一个单元分配给多个亚单元级别的分配操作。

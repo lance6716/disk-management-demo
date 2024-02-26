@@ -1,25 +1,36 @@
 package disk_management_demo
 
 import (
-	"fmt"
+	"io"
 	"os"
 
 	"github.com/pkg/errors"
 )
 
 const (
-	metadataSize       = 1024*1024*1024 + 4
-	magic         byte = 0x12
-	extraUnitSize      = 4
+	metadataSize       = 32 * 1024 * 1024 // 32MiB
+	spaceTotalSizeBits = 40
+	spaceTotalSize     = 1 << spaceTotalSizeBits // 1TiB
+	unitSizeBits       = 12
+	unitSize           = 1 << unitSizeBits // 4KiB
+	unitTotalCntBits   = spaceTotalSizeBits - unitSizeBits
+	unitTotalCnt       = 1 << unitTotalCntBits
+
+	allocLimit = 4 * 1024 * 1024 // 4MiB
 )
 
 type diskManagerImpl struct {
-	f *os.File
-	// freeUnitIdx always point to a free unit, or -1 if there is no free unit.
-	freeUnitIdx int32
+	imageFilePath string
+
+	bitmap     [metadataSize]byte
+	freeSpaces *freeSpacesTp
 }
 
-func newDiskManagerImpl(imageFilePath string) (Manager, error) {
+func NewDiskManagerImpl(imageFilePath string) (Manager, error) {
+	return newDiskManagerImpl(imageFilePath)
+}
+
+func newDiskManagerImpl(imageFilePath string) (*diskManagerImpl, error) {
 	f, err := os.OpenFile(imageFilePath, os.O_RDWR, 0644)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -28,208 +39,118 @@ func newDiskManagerImpl(imageFilePath string) (Manager, error) {
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	if s := stat.Size(); s < metadataSize {
-		return nil, errors.Errorf("file size is too small: %d", s)
+	if s := stat.Size(); s != metadataSize {
+		return nil, errors.Errorf("file size is not expected: %d", s)
 	}
 
-	m := &diskManagerImpl{
-		f:           f,
-		freeUnitIdx: -1,
+	m := &diskManagerImpl{freeSpaces: newFreeSpaces(), imageFilePath: imageFilePath}
+	if _, err = io.ReadAtLeast(f, m.bitmap[:], metadataSize); err != nil {
+		return nil, errors.WithStack(err)
 	}
-	return m, m.initFreeUnitIdx()
+	if err = f.Close(); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	m.initFreeSpaces()
+	return m, nil
 }
 
-// initFreeUnitIdx is used when the disk manager is created. It initializes the
-// freeUnitIdx field by scanning the metadata.
-//
-// pre-condition: d.f is opened and the size is enough for the metadata.
-//
-// post-condition: d.freeUnitIdx is set to the index of the first free unit, or
-// -1 if there is no free unit.
-func (d *diskManagerImpl) initFreeUnitIdx() error {
-	// first check if this is a fresh new file
+func (d *diskManagerImpl) initFreeSpaces() {
+	trailingZeros := uint32(0)
+	zerosStartsAt := uint32(0)
 
-	var extra [extraUnitSize]byte
-	_, err := d.f.ReadAt(extra[:], 0)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	if extra[0] != magic {
-		// this branch means the file is a fresh new file, initialize the metadata and
-		// then write the magic.
-		mod := unitModification{
-			unitIdx: 0,
-			newUnit: unit{followingNum: followingNumMask, used: false},
+	for i, b := range d.bitmap {
+		// quick path for 0xFF
+		if b == 0xFF {
+			if trailingZeros > 0 {
+				d.freeSpaces.put(zerosStartsAt, trailingZeros)
+				trailingZeros = 0
+			}
+			continue
 		}
-		if err = d.commitModification([]unitModification{mod}); err != nil {
-			return err
+		// quick path for 0x00
+		if b == 0x00 {
+			if trailingZeros == 0 {
+				zerosStartsAt = uint32(i) * 8
+			}
+			trailingZeros += 8
+			continue
 		}
-		d.freeUnitIdx = 0
-		if _, err = d.f.WriteAt([]byte{magic}, 0); err != nil {
-			return errors.WithStack(err)
-		}
-		return nil
-	}
 
-	freeUnitIdx, _, err := d.findEnoughFreeUnits(0, 1)
-	if errors.Is(err, ErrNoEnoughSpace) {
-		// ignore this error, it's fine to have no free unit because later caller may
-		// release some.
-		d.freeUnitIdx = -1
-		return nil
-	}
-	d.freeUnitIdx = int32(freeUnitIdx)
-	return err
-}
-
-func (d *diskManagerImpl) commitModification(ms []unitModification) error {
-	// TODO(lance6716): mergeFollowingUnits!!
-	var buf [4]byte
-	// TODO: need mechanism like WAL to ensure the modification is atomic
-	for _, m := range ms {
-		_, err := d.f.WriteAt(
-			encodeUnit(m.newUnit, buf[:0]),
-			unitIdxToOffset(m.unitIdx),
-		)
-		if err != nil {
-			return errors.WithStack(err)
+		for bitIdx := uint32(0); bitIdx < 8; bitIdx++ {
+			if b&(1<<bitIdx) != 0 {
+				if trailingZeros > 0 {
+					d.freeSpaces.put(zerosStartsAt, trailingZeros)
+					trailingZeros = 0
+				}
+			} else {
+				if trailingZeros == 0 {
+					zerosStartsAt = uint32(i)*8 + bitIdx
+				}
+				trailingZeros++
+			}
 		}
 	}
-	return nil
-}
-
-func unitIdxToOffset(unitIdx uint32) int64 {
-	return int64(extraUnitSize + unitIdx*unitSize)
-}
-
-func (d *diskManagerImpl) findEnoughFreeUnits(startIdx, n uint32) (uint32, unit, error) {
-	if n > followingNumMask+1 {
-		return 0, unit{}, ErrNoEnoughSpace
-	}
-	curIdx := startIdx
-	var buf [unitMetadataSize]byte
-
-	for {
-		_, err := d.f.ReadAt(buf[:], unitIdxToOffset(curIdx))
-		if err != nil {
-			return 0, unit{}, errors.WithStack(err)
-		}
-		u := decodeUnit(buf[:unitMetadataSize])
-		if !u.used && u.followingNum >= n {
-			return curIdx, u, nil
-		}
-
-		curIdx += u.followingNum + 1
-		if curIdx == followingNumMask+1 {
-			curIdx = 0
-		}
-		if curIdx == startIdx {
-			return 0, unit{}, ErrNoEnoughSpace
-		}
+	if trailingZeros > 0 {
+		d.freeSpaces.put(zerosStartsAt, trailingZeros)
 	}
 }
 
 // Alloc implements Manager.Alloc.
 func (d *diskManagerImpl) Alloc(size int64) (startOffset int64, _ error) {
-	if d.freeUnitIdx < 0 {
+	if size <= 0 {
+		return 0, errors.Errorf("size should be positive, got: %d", size)
+	}
+	if size > allocLimit {
+		return 0, errors.Errorf("size should be less than 4MiB, got: %d", size)
+	}
+	if size%512*1024 != 0 {
+		return 0, errors.Errorf("size should be multiple of 512KiB, got: %d", size)
+	}
+
+	unitCnt := bytesToUnitCnt(size)
+	unitOffset, length, ok := d.freeSpaces.takeAtLeast(unitCnt)
+	if !ok {
 		return 0, ErrNoEnoughSpace
 	}
-	// ceiling division
-	unitCnt := uint32((size-1)/unitSize + 1)
 
-	startIdx, startUnit, err := d.findEnoughFreeUnits(uint32(d.freeUnitIdx), unitCnt)
-	if err != nil {
-		return 0, err
+	allocInBitmap(d.bitmap[:], unitOffset, unitCnt)
+	if length > unitCnt {
+		d.freeSpaces.put(unitOffset+unitCnt, length-unitCnt)
 	}
-	startOffset = int64(startIdx) * unitSize
-
-	switch {
-	case unitCnt < startUnit.followingNum+1:
-		modifies := splitAndInvertUsedForLeft(startIdx, startUnit, unitCnt)
-		if err = d.commitModification(modifies); err != nil {
-			return 0, err
-		}
-		d.freeUnitIdx = int32(startIdx + unitCnt)
-		return startOffset, nil
-
-	case unitCnt == startUnit.followingNum+1:
-		startUnit.used = true
-		modifies, freeUnitIdx, err := d.mergeFollowingUnits(startIdx, startUnit)
-		if err != nil {
-			return 0, err
-		}
-		if err = d.commitModification(modifies); err != nil {
-			return 0, err
-		}
-		d.freeUnitIdx = int32(freeUnitIdx)
-		return startOffset, nil
-
-	default:
-		panic(fmt.Sprintf(
-			"findEnoughFreeUnits has no error but space is not enough. unitCnt: %d, startIdx: %d, startUnit: %+v",
-			unitCnt, startIdx, startUnit,
-		))
-	}
+	return unitOffsetToBytes(unitOffset), nil
 }
 
-func (d *diskManagerImpl) mergeFollowingUnits(
-	idx uint32,
-	u unit,
-) (_ []unitModification, nextUnitIdx uint32, _ error) {
-	nextUnitIdx = idx + u.followingNum + 1
-	if nextUnitIdx == followingNumMask+1 {
-		return []unitModification{{
-			unitIdx: idx,
-			newUnit: u,
-		}}, 0, nil
-	}
-
-	if nextUnitIdx > followingNumMask+1 {
-		panic(fmt.Sprintf(
-			"nextUnitIdx > followingNumMask+1. idx: %d, u: %+v",
-			idx, u,
-		))
-	}
-
-	var (
-		buf          [unitMetadataSize]byte
-		toMergeUnits = make([]unit, 0, 1)
-	)
-	toMergeUnits = append(toMergeUnits, u)
-
-	for nextUnitIdx <= followingNumMask {
-		_, err := d.f.ReadAt(buf[:], unitIdxToOffset(nextUnitIdx))
-		if err != nil {
-			return nil, 0, errors.WithStack(err)
-		}
-		nextUnit := decodeUnit(buf[:unitMetadataSize])
-
-		if nextUnit.used != u.used {
-			break
-		}
-
-		toMergeUnits = append(toMergeUnits, nextUnit)
-		nextUnitIdx += nextUnit.followingNum + 1
-	}
-
-	if nextUnitIdx > followingNumMask+1 {
-		panic(fmt.Sprintf(
-			"nextUnitIdx > followingNumMask+1. idx: %d, toMergeUnits: %+v",
-			idx, toMergeUnits,
-		))
-	}
-	if nextUnitIdx == followingNumMask+1 {
-		nextUnitIdx = 0
-	}
-
-	return mergeUnits(idx, toMergeUnits), nextUnitIdx, nil
-}
-
+// Free implements Manager.Free.
 func (d *diskManagerImpl) Free(startOffset int64, size int64) error {
-	//TODO implement me
-	panic("implement me")
+	if startOffset < 0 {
+		return errors.Errorf("start offset should be non-negative, got: %d", startOffset)
+	}
+	if size <= 0 {
+		return errors.Errorf("size should be positive, got: %d", size)
+	}
+	if startOffset+size > spaceTotalSize {
+		return errors.Errorf("start offset + size should be less than 1TiB, got: %d", startOffset+size)
+	}
+
+	unitOffset := startOffset / unitSize
+	unitCnt := bytesToUnitCnt(size)
+	freeInBitmap(d.bitmap[:], uint32(unitOffset), unitCnt)
+
+	nextUnitIdx := uint32(unitOffset) + unitCnt
+	// TODO(lance6716): search the offset in in freesSpaces
+	rightCnt := findLeadingZerosCnt(d.bitmap[:], nextUnitIdx)
+	if rightCnt > 0 {
+		d.freeSpaces.delete(nextUnitIdx, rightCnt)
+	}
+	leftCnt := findTrailingZerosCnt(d.bitmap[:], uint32(unitOffset))
+	if leftCnt > 0 {
+		d.freeSpaces.delete(uint32(unitOffset)-leftCnt, leftCnt)
+	}
+	d.freeSpaces.put(uint32(unitOffset)-leftCnt, leftCnt+unitCnt+rightCnt)
+	return nil
 }
 
 func (d *diskManagerImpl) Close() error {
-	return d.f.Close()
+	// TODO(lance6716): atomic write by write to a temp file and rename
+	return os.WriteFile(d.imageFilePath, d.bitmap[:], 0600)
 }
