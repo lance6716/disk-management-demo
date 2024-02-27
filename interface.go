@@ -8,8 +8,7 @@ var (
 )
 
 // Manager uses a local file to provide a simple disk space allocation management
-// interface. All data are persisted in the file. Any successful invocation of
-// this interface guarantees that the action is persisted.
+// interface. All data are persisted in the file.
 type Manager interface {
 	// Alloc reserves a space of given size and returns the start offset of it.
 	//

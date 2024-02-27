@@ -25,8 +25,7 @@ const (
 
 // unit is the basic allocation unit. It is unitSize bytes. This is a dedicated
 // type to avoid confusion with other numbers. It can only be converted using
-// byteSizeToUnitCnt, unitCntToByteSize, byteOffsetToUnitOffset and
-// unitOffsetToByteOffset.
+// byteSizeToUnitCnt, byteOffsetToUnitOffset and unitOffsetToByteOffset.
 type unit uint32
 
 // diskManagerImpl implements Manager. It persists a bitmap file to record the
