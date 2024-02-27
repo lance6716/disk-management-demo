@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var allOnesFn = func() [metadataSize]byte {
-	var ones [metadataSize]byte
+var allOnesFn = func() [bitmapSize]byte {
+	var ones [bitmapSize]byte
 	for i := range ones {
 		ones[i] = 0xff
 	}
@@ -19,22 +19,22 @@ var allOnesFn = func() [metadataSize]byte {
 
 func checkBucketsHasExpectedLengthAndLocations(
 	t *testing.T,
-	s *freeSpacesTp,
-	expected map[uint32][]location,
+	s *freeSpaces,
+	expected map[unit][]location,
 ) {
 	if expected == nil {
-		expected = make(map[uint32][]location)
+		expected = make(map[unit][]location)
 	}
 	for _, b := range s.buckets {
 		switch v := b.(type) {
 		case *oneLengthBucket:
-			locations, ok := expected[uint32(v.length)]
+			locations, ok := expected[v.length]
 			if !ok {
 				require.Len(t, v.offsets, 0)
 				continue
 			}
 
-			offsets := make([]uint32, 0, len(locations))
+			offsets := make([]unit, 0, len(locations))
 			for _, l := range locations {
 				offsets = append(offsets, l.offset)
 			}
@@ -52,36 +52,10 @@ func checkBucketsHasExpectedLengthAndLocations(
 	}
 }
 
-func TestInitFreeSpaces(t *testing.T) {
-	m := &diskManagerImpl{freeSpaces: newFreeSpaces()}
-	m.initFreeSpaces()
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[uint32][]location{
-		unitTotalCnt: {{offset: 0, length: unitTotalCnt}},
-	})
-
-	m.bitmap = allOnesFn()
-	m.freeSpaces = newFreeSpaces()
-	m.initFreeSpaces()
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, nil)
-
-	m.bitmap = [metadataSize]byte{}
-	m.freeSpaces = newFreeSpaces()
-	m.bitmap[0] = 0b0001_0010
-	m.bitmap[1] = 0b0111_0001
-	m.bitmap[metadataSize-1] = 0b1000_0000
-	m.initFreeSpaces()
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[uint32][]location{
-		1:                 {{offset: 0, length: 1}},
-		2:                 {{offset: 2, length: 2}},
-		3:                 {{offset: 5, length: 3}, {offset: 9, length: 3}},
-		128 * 1024 * 1024: {{offset: 15, length: 256*1024*1024 - 16}},
-	})
-}
-
 func createFileWithContent(t *testing.T, content []byte) string {
 	tempFile := path.Join(t.TempDir(), "temp")
 	if content == nil {
-		content = make([]byte, metadataSize)
+		content = make([]byte, bitmapSize)
 	}
 	err := os.WriteFile(tempFile, content, 0600)
 	require.NoError(t, err)
@@ -95,7 +69,7 @@ func TestNewDiskManagerImpl(t *testing.T) {
 	_, err = newDiskManagerImpl("README.md")
 	require.ErrorContains(t, err, "file size is not expected")
 
-	imageContent := make([]byte, metadataSize)
+	imageContent := make([]byte, bitmapSize)
 	imageContent[0] = 0b0001_0010
 	tempFile := createFileWithContent(t, imageContent)
 	m, err := newDiskManagerImpl(tempFile)
@@ -109,7 +83,7 @@ func TestNewDiskManagerImpl(t *testing.T) {
 }
 
 func TestAlloc(t *testing.T) {
-	imageContent := make([]byte, metadataSize)
+	imageContent := make([]byte, bitmapSize)
 	ones := allOnesFn()
 	copy(imageContent, ones[:])
 
@@ -124,7 +98,7 @@ func TestAlloc(t *testing.T) {
 	_, err = m.Alloc(0)
 	require.ErrorContains(t, err, "size should be positive, got: 0")
 	_, err = m.Alloc(1)
-	require.ErrorContains(t, err, "size should be multiple of 512KiB, got: 1")
+	require.ErrorContains(t, err, "size should be multiple of 512B, got: 1")
 	_, err = m.Alloc(1024 * 1024 * 1024)
 	require.ErrorContains(t, err, "size should be less than 4MiB, got: 1073741824")
 
@@ -169,27 +143,27 @@ func TestFree(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, i, offset3)
 	i += unitSize
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[uint32][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
 		128 * 1024 * 1024: {{offset: 1026, length: 256*1024*1024 - 1026}},
 	})
 
 	err = m.Free(offset2, allocLimit)
 	require.NoError(t, err)
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[uint32][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
 		1024:              {{offset: 1, length: 1024}},
 		128 * 1024 * 1024: {{offset: 1026, length: 256*1024*1024 - 1026}},
 	})
 
 	err = m.Free(offset, unitSize)
 	require.NoError(t, err)
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[uint32][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
 		1024:              {{offset: 0, length: 1025}},
 		128 * 1024 * 1024: {{offset: 1026, length: 256*1024*1024 - 1026}},
 	})
 
 	err = m.Free(offset3, unitSize)
 	require.NoError(t, err)
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[uint32][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
 		unitTotalCnt: {{offset: 0, length: unitTotalCnt}},
 	})
 }

@@ -8,26 +8,38 @@ import (
 )
 
 const (
-	metadataSize       = 32 * 1024 * 1024 // 32MiB
+	// predefined constants
+
 	spaceTotalSizeBits = 40
 	spaceTotalSize     = 1 << spaceTotalSizeBits // 1TiB
 	unitSizeBits       = 12
 	unitSize           = 1 << unitSizeBits // 4KiB
-	unitTotalCntBits   = spaceTotalSizeBits - unitSizeBits
-	unitTotalCnt       = 1 << unitTotalCntBits
+	allocLimit         = 4 * 1024 * 1024   // 4MiB
 
-	allocLimit = 4 * 1024 * 1024 // 4MiB
+	// calculated constants
+
+	unitTotalCntBits = spaceTotalSizeBits - unitSizeBits
+	unitTotalCnt     = 1 << unitTotalCntBits // 256Mi
+	bitmapSize       = unitTotalCnt / 8      // 32MiB
 )
 
+// unit is the basic allocation unit. It is unitSize bytes. This is a dedicated
+// type to avoid confusion with other numbers. It can only be converted using
+// byteSizeToUnitCnt, unitCntToByteSize, byteOffsetToUnitOffset and
+// unitOffsetToByteOffset.
+type unit uint32
+
+// diskManagerImpl implements Manager. It persists a bitmap file to record the
+// allocation status of the units. This structure is not thread-safe.
 type diskManagerImpl struct {
 	imageFilePath string
 
-	bitmap     [metadataSize]byte
-	freeSpaces *freeSpacesTp
+	bitmap     [bitmapSize]byte
+	freeSpaces *freeSpaces
 }
 
 func newDiskManagerImpl(imageFilePath string) (*diskManagerImpl, error) {
-	f, err := os.OpenFile(imageFilePath, os.O_RDWR, 0644)
+	f, err := os.OpenFile(imageFilePath, os.O_RDWR, 0600)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -35,114 +47,73 @@ func newDiskManagerImpl(imageFilePath string) (*diskManagerImpl, error) {
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	if s := stat.Size(); s != metadataSize {
+	if s := stat.Size(); s != bitmapSize {
 		return nil, errors.Errorf("file size is not expected: %d", s)
 	}
 
 	m := &diskManagerImpl{freeSpaces: newFreeSpaces(), imageFilePath: imageFilePath}
-	if _, err = io.ReadAtLeast(f, m.bitmap[:], metadataSize); err != nil {
+	if _, err = io.ReadAtLeast(f, m.bitmap[:], bitmapSize); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	if err = f.Close(); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	m.initFreeSpaces()
+	m.freeSpaces.loadFromBitmap(m.bitmap[:])
 	return m, nil
 }
 
-func (d *diskManagerImpl) initFreeSpaces() {
-	trailingZeros := uint32(0)
-	zerosStartsAt := uint32(0)
-
-	for i, b := range d.bitmap {
-		// quick path for 0xFF
-		if b == 0xFF {
-			if trailingZeros > 0 {
-				d.freeSpaces.put(zerosStartsAt, trailingZeros)
-				trailingZeros = 0
-			}
-			continue
-		}
-		// quick path for 0x00
-		if b == 0x00 {
-			if trailingZeros == 0 {
-				zerosStartsAt = uint32(i) * 8
-			}
-			trailingZeros += 8
-			continue
-		}
-
-		for bitIdx := uint32(0); bitIdx < 8; bitIdx++ {
-			if b&(1<<bitIdx) != 0 {
-				if trailingZeros > 0 {
-					d.freeSpaces.put(zerosStartsAt, trailingZeros)
-					trailingZeros = 0
-				}
-			} else {
-				if trailingZeros == 0 {
-					zerosStartsAt = uint32(i)*8 + bitIdx
-				}
-				trailingZeros++
-			}
-		}
-	}
-	if trailingZeros > 0 {
-		d.freeSpaces.put(zerosStartsAt, trailingZeros)
-	}
-}
-
 // Alloc implements Manager.Alloc.
-func (d *diskManagerImpl) Alloc(size int64) (startOffset int64, _ error) {
+func (d *diskManagerImpl) Alloc(size int64) (offset int64, _ error) {
 	if size <= 0 {
 		return 0, errors.Errorf("size should be positive, got: %d", size)
 	}
 	if size > allocLimit {
 		return 0, errors.Errorf("size should be less than 4MiB, got: %d", size)
 	}
-	if size%512*1024 != 0 {
-		return 0, errors.Errorf("size should be multiple of 512KiB, got: %d", size)
+	if size%512 != 0 {
+		return 0, errors.Errorf("size should be multiple of 512B, got: %d", size)
 	}
 
-	unitCnt := bytesToUnitCnt(size)
-	unitOffset, length, ok := d.freeSpaces.takeAtLeast(unitCnt)
+	cnt := byteSizeToUnitCnt(size)
+	unitOffset, length, ok := d.freeSpaces.takeAtLeast(cnt)
 	if !ok {
 		return 0, ErrNoEnoughSpace
 	}
 
-	allocInBitmap(d.bitmap[:], unitOffset, unitCnt)
-	if length > unitCnt {
-		d.freeSpaces.put(unitOffset+unitCnt, length-unitCnt)
+	allocInBitmap(d.bitmap[:], unitOffset, cnt)
+	if length > cnt {
+		d.freeSpaces.put(unitOffset+cnt, length-cnt)
 	}
-	return unitOffsetToBytes(unitOffset), nil
+	return unitOffsetToByteOffset(unitOffset), nil
 }
 
 // Free implements Manager.Free.
-func (d *diskManagerImpl) Free(startOffset int64, size int64) error {
-	if startOffset < 0 {
-		return errors.Errorf("start offset should be non-negative, got: %d", startOffset)
+func (d *diskManagerImpl) Free(offset int64, size int64) error {
+	if offset < 0 {
+		return errors.Errorf("start offset should be non-negative, got: %d", offset)
 	}
 	if size <= 0 {
 		return errors.Errorf("size should be positive, got: %d", size)
 	}
-	if startOffset+size > spaceTotalSize {
-		return errors.Errorf("start offset + size should be less than 1TiB, got: %d", startOffset+size)
+	if offset+size > spaceTotalSize {
+		return errors.Errorf("start offset + size should be less than 1TiB, got: %d", offset+size)
 	}
 
-	unitOffset := startOffset / unitSize
-	unitCnt := bytesToUnitCnt(size)
-	freeInBitmap(d.bitmap[:], uint32(unitOffset), unitCnt)
+	unitOffset := byteOffsetToUnitOffset(offset)
+	unitCnt := byteSizeToUnitCnt(size)
+	freeInBitmap(d.bitmap[:], unitOffset, unitCnt)
 
-	nextUnitIdx := uint32(unitOffset) + unitCnt
-	// TODO(lance6716): search the offset in in freesSpaces
+	nextUnitIdx := unitOffset + unitCnt
+	// TODO(lance6716): search the offset in in freesSpaces instead of bitmap
 	rightCnt := findLeadingZerosCnt(d.bitmap[:], nextUnitIdx)
 	if rightCnt > 0 {
 		d.freeSpaces.delete(nextUnitIdx, rightCnt)
 	}
-	leftCnt := findTrailingZerosCnt(d.bitmap[:], uint32(unitOffset))
+	leftCnt := findTrailingZerosCnt(d.bitmap[:], unitOffset)
 	if leftCnt > 0 {
-		d.freeSpaces.delete(uint32(unitOffset)-leftCnt, leftCnt)
+		d.freeSpaces.delete(unitOffset-leftCnt, leftCnt)
 	}
-	d.freeSpaces.put(uint32(unitOffset)-leftCnt, leftCnt+unitCnt+rightCnt)
+	d.freeSpaces.put(unitOffset-leftCnt, leftCnt+unitCnt+rightCnt)
 	return nil
 }
 

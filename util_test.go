@@ -15,10 +15,10 @@ func TestGetHighestOneIdx(t *testing.T) {
 }
 
 func TestBytesToUnitCnt(t *testing.T) {
-	require.EqualValues(t, 0, bytesToUnitCnt(0))
-	require.EqualValues(t, 1, bytesToUnitCnt(1))
-	require.EqualValues(t, 1, bytesToUnitCnt(unitSize-1))
-	require.EqualValues(t, 1, bytesToUnitCnt(unitSize))
+	require.EqualValues(t, 0, byteSizeToUnitCnt(0))
+	require.EqualValues(t, 1, byteSizeToUnitCnt(1))
+	require.EqualValues(t, 1, byteSizeToUnitCnt(unitSize-1))
+	require.EqualValues(t, 1, byteSizeToUnitCnt(unitSize))
 }
 
 func TestAllocInBitmap(t *testing.T) {
@@ -60,7 +60,7 @@ func TestFindLeadingZerosCnt(t *testing.T) {
 	require.EqualValues(t, 1, findLeadingZerosCnt(bitmap, 3))
 	require.EqualValues(t, 3, findLeadingZerosCnt(bitmap, 5))
 	require.EqualValues(t, 8, findLeadingZerosCnt(bitmap, 9))
-	require.EqualValues(t, 8, findLeadingZerosCnt(bitmap, uint32((len(ones)-1)*8)))
+	require.EqualValues(t, 8, findLeadingZerosCnt(bitmap, unit((len(ones)-1)*8)))
 }
 
 func TestFindTrailingZerosCnt(t *testing.T) {

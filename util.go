@@ -1,23 +1,24 @@
 package disk_management_demo
 
-func getHighestOneIdx(n uint32) int {
-	idx := -1
-	for n > 0 {
-		n >>= 1
-		idx++
-	}
-	return idx
+import "math/bits"
+
+func getHighestOneIdx(n unit) int {
+	return bits.Len32(uint32(n)) - 1
 }
 
-func bytesToUnitCnt(bytes int64) uint32 {
-	return uint32((bytes + unitSize - 1) / unitSize)
+func byteSizeToUnitCnt(size int64) unit {
+	return unit((size + unitSize - 1) / unitSize)
 }
 
-func unitOffsetToBytes(offset uint32) int64 {
+func byteOffsetToUnitOffset(offset int64) unit {
+	return unit(offset / unitSize)
+}
+
+func unitOffsetToByteOffset(offset unit) int64 {
 	return int64(offset) * unitSize
 }
 
-func allocInBitmap(bitmap []byte, offset, length uint32) {
+func allocInBitmap(bitmap []byte, offset, length unit) {
 	zeroBitsBeforeFullByte := offset % 8
 	if zeroBitsBeforeFullByte != 0 {
 		b := byte(0xFF << zeroBitsBeforeFullByte)
@@ -50,7 +51,7 @@ func allocInBitmap(bitmap []byte, offset, length uint32) {
 	bitmap[offset/8] |= b
 }
 
-func freeInBitmap(bitmap []byte, offset, length uint32) {
+func freeInBitmap(bitmap []byte, offset, length unit) {
 	oneBitsBeforeFullByte := offset % 8
 	if oneBitsBeforeFullByte != 0 {
 		zeroBitsBeforeFullByte := 8 - oneBitsBeforeFullByte
@@ -82,7 +83,7 @@ func freeInBitmap(bitmap []byte, offset, length uint32) {
 	bitmap[offset/8] &= b
 }
 
-func findLeadingZerosCnt(bitmap []byte, startOffset uint32) uint32 {
+func findLeadingZerosCnt(bitmap []byte, startOffset unit) unit {
 	if startOffset == unitTotalCnt {
 		return 0
 	}
@@ -93,7 +94,7 @@ func findLeadingZerosCnt(bitmap []byte, startOffset uint32) uint32 {
 	byteIdx := startOffset / 8
 	bitIdx := startOffset % 8
 
-	ret := uint32(0)
+	ret := unit(0)
 	b := bitmap[byteIdx]
 	for ; bitIdx < 8; bitIdx++ {
 		if b&(1<<bitIdx) != 0 {
@@ -102,13 +103,13 @@ func findLeadingZerosCnt(bitmap []byte, startOffset uint32) uint32 {
 		ret++
 	}
 
-	for byteIdx++; byteIdx < metadataSize; byteIdx++ {
+	for byteIdx++; byteIdx < bitmapSize; byteIdx++ {
 		if bitmap[byteIdx] != 0 {
 			break
 		}
 		ret += 8
 	}
-	if byteIdx == metadataSize {
+	if byteIdx == bitmapSize {
 		return ret
 	}
 	bitIdx = 0
@@ -123,7 +124,7 @@ func findLeadingZerosCnt(bitmap []byte, startOffset uint32) uint32 {
 	return ret
 }
 
-func findTrailingZerosCnt(bitmap []byte, endOffset uint32) uint32 {
+func findTrailingZerosCnt(bitmap []byte, endOffset unit) unit {
 	if endOffset == 0 {
 		return 0
 	}
@@ -134,7 +135,7 @@ func findTrailingZerosCnt(bitmap []byte, endOffset uint32) uint32 {
 	byteIdx := int((endOffset - 1) / 8)
 	bitIdx := int((endOffset - 1) % 8)
 
-	ret := uint32(0)
+	ret := unit(0)
 	b := bitmap[byteIdx]
 	for ; bitIdx >= 0; bitIdx-- {
 		if b&(1<<bitIdx) != 0 {
