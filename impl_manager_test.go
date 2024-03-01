@@ -1,6 +1,7 @@
 package disk_management_demo
 
 import (
+	"math/rand"
 	"os"
 	"path"
 	"testing"
@@ -188,4 +189,74 @@ func TestAllocDuration(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoEnoughSpace)
 
 	t.Logf("%d Allocs took %s, %s/alloc", expectedCnt, elapsed, elapsed/time.Duration(expectedCnt))
+}
+
+func TestRecover(t *testing.T) {
+	seed := time.Now().UnixNano()
+	t.Logf("seed: %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+	bitmap := make([]byte, bitmapSize)
+	_, err := rnd.Read(bitmap)
+	require.NoError(t, err)
+
+	tempFile := createFileWithContent(t, bitmap)
+	start := time.Now()
+	_, err = newDiskManagerImpl(tempFile)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+
+	t.Logf("Recover took %s", elapsed)
+}
+
+func TestUtilization(t *testing.T) {
+	seed := time.Now().UnixNano()
+	t.Logf("seed: %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+
+	var totalTime time.Duration
+	recordTime := func(action func()) {
+		start := time.Now()
+		action()
+		totalTime += time.Since(start)
+	}
+	var (
+		used     int64
+		handles  [][2]int64 // [offset, size]
+		allocCnt int
+	)
+
+	tempFile := createFileWithContent(t, nil)
+	m, err := newDiskManagerImpl(tempFile)
+	require.NoError(t, err)
+
+	for {
+		allocCnt++
+		size := unitSize * (rnd.Int63n(allocLimit/unitSize) + 1)
+		var offset int64
+		recordTime(func() {
+			offset, err = m.Alloc(size)
+		})
+		if err != nil {
+			require.ErrorIs(t, err, ErrNoEnoughSpace)
+			break
+		}
+		used += size
+		handles = append(handles, [2]int64{offset, size})
+		if rnd.Intn(10) == 0 {
+			i := rnd.Intn(len(handles))
+			recordTime(func() {
+				err = m.Free(handles[i][0], handles[i][1])
+			})
+			require.NoError(t, err)
+			used -= handles[i][1]
+			handles[i] = handles[len(handles)-1]
+			handles = handles[:len(handles)-1]
+		}
+	}
+
+	util := float64(used) / float64(spaceTotalSize)
+	t.Logf(
+		"Utilization: %.6f%%, Total time: %s, Total allocs: %d",
+		util*100, totalTime, allocCnt,
+	)
 }

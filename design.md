@@ -166,6 +166,28 @@ BenchmarkIter128MiElem-8   	      12	  85439798 ns/op
 
 单线程分配的性能足够快，因此实现并发调用时减少争抢开销即可。
 
+## 测试初始化性能
+
+随机写入 bitmap 测试初始化耗时，见 `impl_manager_test.go`
+
+```
+=== RUN   TestRecover
+    impl_manager_test.go:196: seed: 1709294313839103000
+    impl_manager_test.go:208: Recover took 1.498601167s
+--- PASS: TestRecover (1.54s)
+```
+
+## 测试磁盘利用率以及整体耗时
+
+随机调用分配并以 10% 的概率调用释放，测试磁盘利用率以及整体耗时，见 `impl_manager_test.go`
+
+```
+=== RUN   TestUtilization
+    impl_manager_test.go:213: seed: 1709296683003217000
+    impl_manager_test.go:258: Utilization: 99.935323%, Total time: 80.194161ms, Total allocs: 581714
+--- PASS: TestUtilization (0.17s)
+```
+
 # 并发安全设计
 
 首先考虑简单通过锁或者 channel 保护临界区，如果性能足够，可以直接使用这种方式。
@@ -184,4 +206,3 @@ PASS
 
 使用锁的方式性能最好，每个任务耗时从 2ns 增加到 140ns。
 虽然相较于真正的 Alloc 耗时 68ns 很慢，但期望这种耗时也能够容忍。
-
