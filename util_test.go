@@ -1,6 +1,7 @@
 package disk_management_demo
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -34,8 +35,7 @@ func TestAllocInBitmap(t *testing.T) {
 }
 
 func TestFreeInBitmap(t *testing.T) {
-	ones := allOnesFn()
-	bitmap := ones[:]
+	bitmap := slices.Clone(ones[:])
 	freeInBitmap(bitmap, 0, 1)
 	require.Equal(t, byte(0b1111_1110), bitmap[0])
 	freeInBitmap(bitmap, 2, 2)
@@ -47,12 +47,11 @@ func TestFreeInBitmap(t *testing.T) {
 }
 
 func TestFindLeadingZerosCnt(t *testing.T) {
-	ones := allOnesFn()
-	ones[0] = 0b0001_0010
-	ones[1] = 0b0000_0001
-	ones[2] = 0b1111_1110
-	ones[len(ones)-1] = 0
-	bitmap := ones[:]
+	bitmap := slices.Clone(ones[:])
+	bitmap[0] = 0b0001_0010
+	bitmap[1] = 0b0000_0001
+	bitmap[2] = 0b1111_1110
+	bitmap[len(bitmap)-1] = 0
 
 	require.EqualValues(t, 1, findLeadingZerosCnt(bitmap, 0))
 	require.EqualValues(t, 0, findLeadingZerosCnt(bitmap, 1))
@@ -60,16 +59,15 @@ func TestFindLeadingZerosCnt(t *testing.T) {
 	require.EqualValues(t, 1, findLeadingZerosCnt(bitmap, 3))
 	require.EqualValues(t, 3, findLeadingZerosCnt(bitmap, 5))
 	require.EqualValues(t, 8, findLeadingZerosCnt(bitmap, 9))
-	require.EqualValues(t, 8, findLeadingZerosCnt(bitmap, unit((len(ones)-1)*8)))
+	require.EqualValues(t, 8, findLeadingZerosCnt(bitmap, unit((len(bitmap)-1)*8)))
 }
 
 func TestFindTrailingZerosCnt(t *testing.T) {
-	ones := allOnesFn()
-	ones[0] = 0b0001_0010
-	ones[1] = 0b0000_0001
-	ones[2] = 0b1111_1110
-	ones[len(ones)-1] = 0
-	bitmap := ones[:]
+	bitmap := slices.Clone(ones[:])
+	bitmap[0] = 0b0001_0010
+	bitmap[1] = 0b0000_0001
+	bitmap[2] = 0b1111_1110
+	bitmap[len(bitmap)-1] = 0
 
 	require.EqualValues(t, 1, findTrailingZerosCnt(bitmap, 1))
 	require.EqualValues(t, 0, findTrailingZerosCnt(bitmap, 2))

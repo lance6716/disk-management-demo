@@ -28,7 +28,6 @@ func TestInitFreeSpaces(t *testing.T) {
 		unitTotalCnt: {{offset: 0, length: unitTotalCnt}},
 	})
 
-	ones := allOnesFn()
 	s = newFreeSpaces()
 	s.loadFromBitmap(ones[:])
 	checkBucketsHasExpectedLengthAndLocations(t, s, nil)

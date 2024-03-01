@@ -117,6 +117,15 @@ func (d *diskManagerImpl) Free(offset int64, size int64) error {
 }
 
 func (d *diskManagerImpl) Close() error {
-	// TODO(lance6716): atomic write by write to a temp file and rename
-	return os.WriteFile(d.imageFilePath, d.bitmap[:], 0600)
+	f, err := os.CreateTemp("", "bitmap")
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	if _, err = f.Write(d.bitmap[:]); err != nil {
+		return errors.WithStack(err)
+	}
+	if err = f.Close(); err != nil {
+		return errors.WithStack(err)
+	}
+	return errors.WithStack(os.Rename(f.Name(), d.imageFilePath))
 }

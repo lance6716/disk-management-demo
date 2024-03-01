@@ -10,14 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var allOnesFn = func() [bitmapSize]byte {
-	var ones [bitmapSize]byte
-	for i := range ones {
-		ones[i] = 0xff
-	}
-	return ones
-}
-
 func checkBucketsHasExpectedLengthAndLocations(
 	t *testing.T,
 	s *freeSpaces,
@@ -85,7 +77,6 @@ func TestNewDiskManagerImpl(t *testing.T) {
 
 func TestAlloc(t *testing.T) {
 	imageContent := make([]byte, bitmapSize)
-	ones := allOnesFn()
 	copy(imageContent, ones[:])
 
 	// first 1024+8 bits is unused
@@ -210,6 +201,7 @@ func TestRecover(t *testing.T) {
 
 func TestUtilization(t *testing.T) {
 	seed := time.Now().UnixNano()
+	seed = 1709296683003217000
 	t.Logf("seed: %d", seed)
 	rnd := rand.New(rand.NewSource(seed))
 

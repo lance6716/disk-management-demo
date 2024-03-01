@@ -18,6 +18,14 @@ func unitOffsetToByteOffset(offset unit) int64 {
 	return int64(offset) * unitSize
 }
 
+var ones [bitmapSize]byte
+
+func init() {
+	for i := range ones {
+		ones[i] = 0xFF
+	}
+}
+
 func allocInBitmap(bitmap []byte, offset, length unit) {
 	zeroBitsBeforeFullByte := offset % 8
 	if zeroBitsBeforeFullByte != 0 {
@@ -36,11 +44,12 @@ func allocInBitmap(bitmap []byte, offset, length unit) {
 		offset += oneBitsBeforeFullByte
 	}
 
-	// TODO(lance6716): check performance if use copy(dst, ones) instead of loop
-	for length >= 8 {
+	if length >= 8 {
+		bs := length / 8
+		length %= 8
+		copy(bitmap[offset/8:], ones[:bs])
 		bitmap[offset/8] = 0xFF
-		offset += 8
-		length -= 8
+		offset += bs * 8
 	}
 
 	if length == 0 {
