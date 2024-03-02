@@ -85,7 +85,9 @@ BenchmarkIter1MiElem-8   	    1857	    612238 ns/op
 那么桶中有 256Mi/128/2 = 1Mi 个元素。
 
 因此桶的划分策略是：
-- 对于长度小于 128 的指针，在专属的桶中存放
+- 对于长度小于 128 的指针，在专属的桶中存放。
+  内存占用的最坏情况即元素数目最多的情况，对应元素长度最小时。
+  它们全部位于长度为 1 的桶，此时包含 128Mi 个元素（考虑到已分配和未分配的单元全部相隔）。
 - 对于长度大于等于 128 的指针，存放在长度为 [ floor(log2(length), ceil(log2(length)) ) 的桶中。
 共有 127+22 = 149 个桶。
 
@@ -182,10 +184,10 @@ BenchmarkIter128MiElem-8   	      12	  85439798 ns/op
 随机调用分配并以 10% 的概率调用释放，测试磁盘利用率以及整体耗时，见 `impl_manager_test.go`
 
 ```
-=== RUN   TestUtilization
-    impl_manager_test.go:213: seed: 1709296683003217000
-    impl_manager_test.go:258: Utilization: 99.935323%, Total time: 80.194161ms, Total allocs: 581714
---- PASS: TestUtilization (0.17s)
+=== RUN   TestUtilization10PercentFree
+    impl_manager_test.go:208: seed: 1709352966352799000
+    impl_manager_test.go:259: Utilization: 99.934159%, Total time: 75.99573ms, Total allocs: 581005, Total frees: 57904, Average time/alloc: 70ns, Average time/free: 606ns
+--- PASS: TestUtilization10PercentFree (0.17s)
 ```
 
 # 并发安全设计

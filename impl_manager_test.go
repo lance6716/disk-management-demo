@@ -199,22 +199,33 @@ func TestRecover(t *testing.T) {
 	t.Logf("Recover took %s", elapsed)
 }
 
-func TestUtilization(t *testing.T) {
+func TestUtilization10PercentFree(t *testing.T) {
+	testUtilizationWithFreePercent(t, 10)
+}
+
+func TestUtilization50PercentFree(t *testing.T) {
+	testUtilizationWithFreePercent(t, 50)
+}
+
+func testUtilizationWithFreePercent(t *testing.T, percent int) {
 	seed := time.Now().UnixNano()
-	seed = 1709296683003217000
 	t.Logf("seed: %d", seed)
 	rnd := rand.New(rand.NewSource(seed))
 
-	var totalTime time.Duration
-	recordTime := func(action func()) {
+	var (
+		totalAllocTime time.Duration
+		totalFreeTime  time.Duration
+		allocCnt       int
+		freeCnt        int
+	)
+	recordTime := func(action func(), d *time.Duration) {
 		start := time.Now()
 		action()
-		totalTime += time.Since(start)
+		*d += time.Since(start)
 	}
 	var (
-		used     int64
-		handles  [][2]int64 // [offset, size]
-		allocCnt int
+		used    int64
+		handles [][2]int64 // [offset, size]
 	)
 
 	tempFile := createFileWithContent(t, nil)
@@ -222,24 +233,26 @@ func TestUtilization(t *testing.T) {
 	require.NoError(t, err)
 
 	for {
-		allocCnt++
 		size := unitSize * (rnd.Int63n(allocLimit/unitSize) + 1)
 		var offset int64
 		recordTime(func() {
 			offset, err = m.Alloc(size)
-		})
+		}, &totalAllocTime)
 		if err != nil {
 			require.ErrorIs(t, err, ErrNoEnoughSpace)
 			break
 		}
+		allocCnt++
 		used += size
 		handles = append(handles, [2]int64{offset, size})
-		if rnd.Intn(10) == 0 {
+
+		if rnd.Intn(100) < percent {
 			i := rnd.Intn(len(handles))
 			recordTime(func() {
 				err = m.Free(handles[i][0], handles[i][1])
-			})
+			}, &totalFreeTime)
 			require.NoError(t, err)
+			freeCnt++
 			used -= handles[i][1]
 			handles[i] = handles[len(handles)-1]
 			handles = handles[:len(handles)-1]
@@ -248,7 +261,7 @@ func TestUtilization(t *testing.T) {
 
 	util := float64(used) / float64(spaceTotalSize)
 	t.Logf(
-		"Utilization: %.6f%%, Total time: %s, Total allocs: %d",
-		util*100, totalTime, allocCnt,
+		"Utilization: %.6f%%, Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
+		util*100, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
 	)
 }
