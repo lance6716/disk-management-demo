@@ -265,3 +265,77 @@ func testUtilizationWithFreePercent(t *testing.T, percent int) {
 		util*100, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
 	)
 }
+
+func TestUtilizationAfter10TiB(t *testing.T) {
+	seed := time.Now().UnixNano()
+	t.Logf("seed: %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+
+	targetWriteAmount := int64(10 * 1024 * 1024 * 1024 * 1024) // 10TiB
+	freePercent := 10
+
+	var (
+		totalAllocTime time.Duration
+		totalFreeTime  time.Duration
+		allocCnt       int
+		freeCnt        int
+		allocated      int64
+		utilizations   []float64
+	)
+	recordTime := func(action func(), d *time.Duration) {
+		start := time.Now()
+		action()
+		*d += time.Since(start)
+	}
+	var (
+		used    int64
+		handles [][2]int64 // [offset, size]
+	)
+
+	tempFile := createFileWithContent(t, nil)
+	m, err := newDiskManagerImpl(tempFile)
+	require.NoError(t, err)
+
+	for {
+		size := unitSize * (rnd.Int63n(allocLimit/unitSize) + 1)
+		var offset int64
+		recordTime(func() {
+			offset, err = m.Alloc(size)
+		}, &totalAllocTime)
+		if err == nil {
+			allocCnt++
+			used += size
+			allocated += size
+			handles = append(handles, [2]int64{offset, size})
+			continue
+		}
+
+		require.ErrorIs(t, err, ErrNoEnoughSpace)
+		utilizations = append(utilizations, float64(used)/float64(spaceTotalSize))
+		if allocated >= targetWriteAmount {
+			break
+		}
+
+		newHandles := make([][2]int64, 0, len(handles))
+		for _, h := range handles {
+			if rnd.Intn(100) < freePercent {
+				recordTime(func() {
+					err = m.Free(h[0], h[1])
+				}, &totalFreeTime)
+				require.NoError(t, err)
+				freeCnt++
+				used -= h[1]
+				continue
+			}
+
+			newHandles = append(newHandles, h)
+		}
+
+		handles = newHandles
+	}
+
+	t.Logf(
+		"Utilization: %v\n Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
+		utilizations, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
+	)
+}
