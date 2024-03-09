@@ -1,6 +1,7 @@
 package disk_management_demo
 
 import (
+	"fmt"
 	"math/rand"
 	"os"
 	"path"
@@ -334,8 +335,13 @@ func TestUtilizationAfter10TiB(t *testing.T) {
 		handles = newHandles
 	}
 
+	prettyPrintUtils := make([]string, 0, len(utilizations))
+	for _, u := range utilizations {
+		prettyPrintUtils = append(prettyPrintUtils, fmt.Sprintf("%.6f%%", u*100))
+	}
+
 	t.Logf(
 		"Utilization: %v\n Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
-		utilizations, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
+		prettyPrintUtils, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
 	)
 }

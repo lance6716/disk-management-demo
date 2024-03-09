@@ -1,8 +1,11 @@
 package disk_management_demo
 
 import (
+	"math"
+	"math/rand"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -76,4 +79,38 @@ func TestFindTrailingZerosCnt(t *testing.T) {
 	require.EqualValues(t, 3, findTrailingZerosCnt(bitmap, 8))
 	require.EqualValues(t, 8, findTrailingZerosCnt(bitmap, 17))
 	require.EqualValues(t, 8, findTrailingZerosCnt(bitmap, unitTotalCnt))
+}
+
+type geometricDistribution struct {
+	p float64
+	r *rand.Rand
+}
+
+func (g geometricDistribution) random() int {
+	// ref https://math.stackexchange.com/questions/485448/prove-the-way-to-generate-geometrically-distributed-random-numbers
+	return int(math.Floor(math.Log(g.r.Float64()) / math.Log(1-g.p)))
+}
+
+func TestGeometricDistribution(t *testing.T) {
+	seed := time.Now().UnixNano()
+	t.Logf("seed: %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+
+	p := 0.9
+	x := geometricDistribution{r: rnd, p: p}
+
+	limit := 512 * 1024
+	xDist := map[int]int{}
+	cur := 0
+	for {
+		// we got X failed attempts (this alloc should not be freed)
+		xSampled := x.random()
+		cur += xSampled
+		cur += 1 // then a successful attempt (this alloc should be freed)
+		if cur > limit {
+			break
+		}
+		xDist[xSampled]++
+	}
+	t.Logf("X distribution: %v", xDist)
 }
