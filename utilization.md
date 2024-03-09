@@ -59,3 +59,21 @@ alloc 调用次数的期望接近 256Mi/512.5 ~= 512Ki。
 1. 额外维护 maxContinuesFree 表示一个“较大的连续空间”
 2. 在 alloc 时，如果没有恰好相等的空闲空间，从 maxContinuesFree 中分配
 3. 在 maxContinuesFree 用尽时，重新选定目前最大的连续空闲空间作为 maxContinuesFree
+
+## 简化版
+
+```
+=== RUN   TestUtilizationAfter10TiB
+    impl_manager_test.go:275: seed: 1709980645452205000
+    impl_manager_test.go:353: Utilization: max 99.999899%, min 98.707556%, avg 99.116611%
+         Total time: 4.458005023s, Total allocs: 5245198, Total frees: 4724853, Average time/alloc: 532ns, Average time/free: 352ns
+--- PASS: TestUtilizationAfter10TiB (6.35s)
+```
+
+```
+=== RUN   TestUtilizationAfter100TiB
+    impl_manager_test.go:279: seed: 1709980677604953000
+    impl_manager_test.go:357: Utilization: max 99.999955%, min 98.765172%, avg 99.138116%
+         Total time: 48.448216017s, Total allocs: 52396228, Total frees: 51876353, Average time/alloc: 576ns, Average time/free: 351ns
+--- PASS: TestUtilizationAfter100TiB (68.47s)
+```

@@ -98,7 +98,12 @@ func (s *freeSpaces) getBucketIdx(length unit) int {
 }
 
 func (s *freeSpaces) takeAtLeast(length unit) (unit, unit, bool) {
-	for i := s.getBucketIdx(length); i < len(s.buckets); i++ {
+	idx := s.getBucketIdx(length)
+	if offset, ok := s.buckets[idx].take(length); ok {
+		return offset, length, true
+	}
+
+	for i := len(s.buckets) - 1; i >= idx; i-- {
 		offset, l, ok := s.buckets[i].takeAtLeast(length)
 		if ok {
 			return offset, l, true
@@ -113,6 +118,7 @@ func (s *freeSpaces) delete(offset, length unit) {
 
 type bucket interface {
 	put(offset unit, length unit)
+	take(length unit) (unit, bool)
 	takeAtLeast(length unit) (unit, unit, bool)
 	delete(offset unit)
 }
@@ -124,6 +130,18 @@ type oneLengthBucket struct {
 
 func (o *oneLengthBucket) put(offset unit, _ unit) {
 	o.offsets = append(o.offsets, offset)
+}
+
+func (o *oneLengthBucket) take(length unit) (unit, bool) {
+	if length != o.length {
+		panic("unexpected length")
+	}
+	if len(o.offsets) == 0 {
+		return 0, false
+	}
+	offset := o.offsets[len(o.offsets)-1]
+	o.offsets = o.offsets[:len(o.offsets)-1]
+	return offset, true
 }
 
 func (o *oneLengthBucket) takeAtLeast(length unit) (unit, unit, bool) {
@@ -156,6 +174,28 @@ type varLengthBucket struct {
 
 func (v *varLengthBucket) put(offset unit, length unit) {
 	v.locations = append(v.locations, location{offset: offset, length: length})
+}
+
+func (v *varLengthBucket) take(length unit) (unit, bool) {
+	if len(v.locations) == 0 {
+		return 0, false
+	}
+
+	gotIdx := -1
+	for i, l := range v.locations {
+		if l.length == length {
+			gotIdx = i
+			break
+		}
+	}
+	if gotIdx == -1 {
+		return 0, false
+	}
+
+	l := v.locations[gotIdx]
+	v.locations[gotIdx] = v.locations[len(v.locations)-1]
+	v.locations = v.locations[:len(v.locations)-1]
+	return l.offset, true
 }
 
 func (v *varLengthBucket) takeAtLeast(length unit) (unit, unit, bool) {

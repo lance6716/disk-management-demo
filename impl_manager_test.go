@@ -1,7 +1,6 @@
 package disk_management_demo
 
 import (
-	"fmt"
 	"math/rand"
 	"os"
 	"path"
@@ -268,11 +267,18 @@ func testUtilizationWithFreePercent(t *testing.T, percent int) {
 }
 
 func TestUtilizationAfter10TiB(t *testing.T) {
+	testUtilizationAfter(t, 10*1024*1024*1024*1024)
+}
+
+func TestUtilizationAfter100TiB(t *testing.T) {
+	testUtilizationAfter(t, 100*1024*1024*1024*1024)
+}
+
+func testUtilizationAfter(t *testing.T, targetWriteAmount int64) {
 	seed := time.Now().UnixNano()
 	t.Logf("seed: %d", seed)
 	rnd := rand.New(rand.NewSource(seed))
 
-	targetWriteAmount := int64(10 * 1024 * 1024 * 1024 * 1024) // 10TiB
 	freePercent := 10
 
 	var (
@@ -335,13 +341,21 @@ func TestUtilizationAfter10TiB(t *testing.T) {
 		handles = newHandles
 	}
 
-	prettyPrintUtils := make([]string, 0, len(utilizations))
+	var (
+		maxUtil float64
+		minUtil float64
+		sumUtil float64
+	)
+	minUtil = utilizations[0]
+
 	for _, u := range utilizations {
-		prettyPrintUtils = append(prettyPrintUtils, fmt.Sprintf("%.6f%%", u*100))
+		maxUtil = max(maxUtil, u)
+		minUtil = min(minUtil, u)
+		sumUtil += u
 	}
 
 	t.Logf(
-		"Utilization: %v\n Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
-		prettyPrintUtils, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
+		"Utilization: max %.6f%%, min %.6f%%, avg %.6f%%\n Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
+		maxUtil*100, minUtil*100, sumUtil/float64(len(utilizations))*100, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
 	)
 }
