@@ -24,7 +24,7 @@ func TestInitFreeSpaces(t *testing.T) {
 	s := newFreeSpaces()
 	zeros := make([]byte, bitmapSize)
 	s.loadFromBitmap(zeros)
-	checkBucketsHasExpectedLengthAndLocations(t, s, map[unit][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, s, map[unit][]*location{
 		unitTotalCnt: {{offset: 0, length: unitTotalCnt}},
 	})
 
@@ -38,7 +38,7 @@ func TestInitFreeSpaces(t *testing.T) {
 	bitmap[1] = 0b0111_0001
 	bitmap[bitmapSize-1] = 0b1000_0000
 	s.loadFromBitmap(bitmap)
-	checkBucketsHasExpectedLengthAndLocations(t, s, map[unit][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, s, map[unit][]*location{
 		1:                 {{offset: 0, length: 1}},
 		2:                 {{offset: 2, length: 2}},
 		3:                 {{offset: 5, length: 3}, {offset: 9, length: 3}},

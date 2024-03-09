@@ -1,10 +1,10 @@
 package disk_management_demo
 
 import (
-	"fmt"
 	"math/rand"
 	"os"
 	"path"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,10 +14,10 @@ import (
 func checkBucketsHasExpectedLengthAndLocations(
 	t *testing.T,
 	s *freeSpaces,
-	expected map[unit][]location,
+	expected map[unit][]*location,
 ) {
 	if expected == nil {
-		expected = make(map[unit][]location)
+		expected = make(map[unit][]*location)
 	}
 	for _, b := range s.buckets {
 		switch v := b.(type) {
@@ -80,10 +80,11 @@ func TestAlloc(t *testing.T) {
 	imageContent := make([]byte, bitmapSize)
 	copy(imageContent, ones[:])
 
-	// first 1024+8 bits is unused
-	for i := 0; i < 129; i++ {
+	// first 1024+8+127 bits is unused
+	for i := 0; i < 144; i++ {
 		imageContent[i] = 0
 	}
+	imageContent[144] = 0b1000_0000
 
 	tempFile := createFileWithContent(t, imageContent)
 	m, err := newDiskManagerImpl(tempFile)
@@ -113,7 +114,13 @@ func TestAlloc(t *testing.T) {
 
 	got, err := os.ReadFile(tempFile)
 	require.NoError(t, err)
-	require.Equal(t, ones[:], got)
+	expected := slices.Clone(ones[:])
+	// with maxContinuousFree, these 127 bits are not used
+	for i = 129; i < 144; i++ {
+		expected[i] = 0
+	}
+	expected[144] = 0b1000_0000
+	require.Equal(t, expected, got)
 }
 
 func TestFree(t *testing.T) {
@@ -136,27 +143,27 @@ func TestFree(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, i, offset3)
 	i += unitSize
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]*location{
 		128 * 1024 * 1024: {{offset: 1026, length: 256*1024*1024 - 1026}},
 	})
 
 	err = m.Free(offset2, allocLimit)
 	require.NoError(t, err)
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]*location{
 		1024:              {{offset: 1, length: 1024}},
 		128 * 1024 * 1024: {{offset: 1026, length: 256*1024*1024 - 1026}},
 	})
 
 	err = m.Free(offset, unitSize)
 	require.NoError(t, err)
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]*location{
 		1024:              {{offset: 0, length: 1025}},
 		128 * 1024 * 1024: {{offset: 1026, length: 256*1024*1024 - 1026}},
 	})
 
 	err = m.Free(offset3, unitSize)
 	require.NoError(t, err)
-	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]location{
+	checkBucketsHasExpectedLengthAndLocations(t, m.freeSpaces, map[unit][]*location{
 		unitTotalCnt: {{offset: 0, length: unitTotalCnt}},
 	})
 }
@@ -210,6 +217,7 @@ func TestUtilization50PercentFree(t *testing.T) {
 
 func testUtilizationWithFreePercent(t *testing.T, percent int) {
 	seed := time.Now().UnixNano()
+	seed = 1709977821053597000
 	t.Logf("seed: %d", seed)
 	rnd := rand.New(rand.NewSource(seed))
 
@@ -268,11 +276,18 @@ func testUtilizationWithFreePercent(t *testing.T, percent int) {
 }
 
 func TestUtilizationAfter10TiB(t *testing.T) {
+	testUtilizationAfter(t, 10*1024*1024*1024*1024)
+}
+
+func TestUtilizationAfter100TiB(t *testing.T) {
+	testUtilizationAfter(t, 100*1024*1024*1024*1024)
+}
+
+func testUtilizationAfter(t *testing.T, targetWriteAmount int64) {
 	seed := time.Now().UnixNano()
 	t.Logf("seed: %d", seed)
 	rnd := rand.New(rand.NewSource(seed))
 
-	targetWriteAmount := int64(10 * 1024 * 1024 * 1024 * 1024) // 10TiB
 	freePercent := 10
 
 	var (
@@ -335,13 +350,21 @@ func TestUtilizationAfter10TiB(t *testing.T) {
 		handles = newHandles
 	}
 
-	prettyPrintUtils := make([]string, 0, len(utilizations))
+	var (
+		maxUtil float64
+		minUtil float64
+		sumUtil float64
+	)
+	minUtil = utilizations[0]
+
 	for _, u := range utilizations {
-		prettyPrintUtils = append(prettyPrintUtils, fmt.Sprintf("%.6f%%", u*100))
+		maxUtil = max(maxUtil, u)
+		minUtil = min(minUtil, u)
+		sumUtil += u
 	}
 
 	t.Logf(
-		"Utilization: %v\n Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
-		prettyPrintUtils, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
+		"Utilization: max %.6f%%, min %.6f%%, avg %.6f%%\n Total time: %s, Total allocs: %d, Total frees: %d, Average time/alloc: %s, Average time/free: %s",
+		maxUtil*100, minUtil*100, sumUtil/float64(len(utilizations))*100, totalAllocTime+totalFreeTime, allocCnt, freeCnt, totalAllocTime/time.Duration(allocCnt), totalFreeTime/time.Duration(freeCnt),
 	)
 }

@@ -58,6 +58,7 @@ func newDiskManagerImpl(imageFilePath string) (*diskManagerImpl, error) {
 		return nil, errors.WithStack(err)
 	}
 	m.freeSpaces.loadFromBitmap(m.bitmap[:])
+	m.freeSpaces.rebuildMaxContinuousFree(0)
 	return m, nil
 }
 
@@ -74,15 +75,12 @@ func (d *diskManagerImpl) Alloc(size int64) (offset int64, _ error) {
 	}
 
 	cnt := byteSizeToUnitCnt(size)
-	unitOffset, length, ok := d.freeSpaces.takeAtLeast(cnt)
+	unitOffset, ok := d.freeSpaces.take(cnt)
 	if !ok {
 		return 0, ErrNoEnoughSpace
 	}
 
 	allocInBitmap(d.bitmap[:], unitOffset, cnt)
-	if length > cnt {
-		d.freeSpaces.put(unitOffset+cnt, length-cnt)
-	}
 	return unitOffsetToByteOffset(unitOffset), nil
 }
 

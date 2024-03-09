@@ -59,3 +59,53 @@ alloc 调用次数的期望接近 256Mi/512.5 ~= 512Ki。
 1. 额外维护 maxContinuesFree 表示一个“较大的连续空间”
 2. 在 alloc 时，如果没有恰好相等的空闲空间，从 maxContinuesFree 中分配
 3. 在 maxContinuesFree 用尽时，重新选定目前最大的连续空闲空间作为 maxContinuesFree
+
+为了方便实现，maxContinuesFree 不会属于 oneLengthBucket，即它的长度不会小于 128
+
+## 测试结果
+
+擦写量 10TiB
+
+```
+=== RUN   TestUtilizationAfter10TiB
+    impl_manager_test.go:288: seed: 1709982138098643000
+    impl_manager_test.go:366: Utilization: max 99.999848%, min 99.331115%, avg 99.408510%
+         Total time: 5.676323376s, Total allocs: 5255356, Total frees: 4735538, Average time/alloc: 613ns, Average time/free: 517ns
+--- PASS: TestUtilizationAfter10TiB (7.68s)
+```
+
+擦写量 100TiB 时
+
+```
+=== RUN   TestUtilizationAfter100TiB
+    impl_manager_test.go:288: seed: 1709982178190500000
+    impl_manager_test.go:366: Utilization: max 99.999910%, min 99.283191%, avg 99.408665%
+         Total time: 1m4.224638611s, Total allocs: 52422049, Total frees: 51901639, Average time/alloc: 695ns, Average time/free: 535ns
+--- PASS: TestUtilizationAfter100TiB (85.50s)
+```
+
+## 一个简化版的实现
+
+在上面的实现中，我们维护了一个 maxContinuesFree，在精确匹配失败时从中分配。
+这种思路可以简化为，在精确匹配失败时，现场随机选择一个较大的连续空间进行分配。
+这可以在 freeSpace 维护的桶中降序选择进行分配来实现。
+
+代码位于 `test-simple-impl` 分支上，粘贴它的测试效果
+
+```
+=== RUN   TestUtilizationAfter10TiB
+    impl_manager_test.go:275: seed: 1709980645452205000
+    impl_manager_test.go:353: Utilization: max 99.999899%, min 98.707556%, avg 99.116611%
+         Total time: 4.458005023s, Total allocs: 5245198, Total frees: 4724853, Average time/alloc: 532ns, Average time/free: 352ns
+--- PASS: TestUtilizationAfter10TiB (6.35s)
+```
+
+```
+=== RUN   TestUtilizationAfter100TiB
+    impl_manager_test.go:279: seed: 1709980677604953000
+    impl_manager_test.go:357: Utilization: max 99.999955%, min 98.765172%, avg 99.138116%
+         Total time: 48.448216017s, Total allocs: 52396228, Total frees: 51876353, Average time/alloc: 576ns, Average time/free: 351ns
+--- PASS: TestUtilizationAfter100TiB (68.47s)
+```
+
+简化后，磁盘利用率略低一些。
